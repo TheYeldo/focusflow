@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Level List",
-  description: "A playful task board with XP, levels, progress and sounds.",
+  title: "FocusFlow",
+  description: "A glassy task organizer with priorities, deadlines, search, XP and sounds.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

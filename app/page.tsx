@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import TodoQuest from "./TodoQuest";
 
 export const metadata: Metadata = {
-  title: "Level List",
-  description: "Todo-лист с уровнями, XP, комбо и мягкими звуками действий.",
+  title: "FocusFlow",
+  description: "Стеклянный todo-органайзер с дедлайнами, категориями, XP и звуками.",
 };
 
 export default function Home() {

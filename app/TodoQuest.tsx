@@ -4,6 +4,7 @@
 
 import {
   type CSSProperties,
+  type FormEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -14,84 +15,211 @@ import {
 const TASKS_KEY = "level-list.tasks";
 const STATS_KEY = "level-list.stats";
 
-const DIFFICULTIES = {
-  quick: { label: "Легко", xp: 20, tone: "mint" },
-  focus: { label: "Фокус", xp: 35, tone: "cyan" },
-  boss: { label: "Босс", xp: 60, tone: "coral" },
+const CATEGORIES = [
+  { id: "work", name: "Работа", color: "blue" },
+  { id: "study", name: "Учёба", color: "violet" },
+  { id: "home", name: "Дом", color: "green" },
+  { id: "personal", name: "Личное", color: "pink" },
+  { id: "health", name: "Здоровье", color: "orange" },
+] as const;
+
+const PRIORITIES = {
+  low: { label: "Низкий", xp: 25, order: 1, tone: "green" },
+  medium: { label: "Средний", xp: 45, order: 2, tone: "amber" },
+  high: { label: "Высокий", xp: 70, order: 3, tone: "red" },
 } as const;
 
-type Difficulty = keyof typeof DIFFICULTIES;
+type CategoryId = (typeof CATEGORIES)[number]["id"];
+type Priority = keyof typeof PRIORITIES;
+type Tab = "all" | "today" | "overdue" | CategoryId;
+type PriorityFilter = Priority | "all";
+type SortMode = "newest" | "oldest" | "deadline" | "priority";
+type Theme = "light" | "dark";
+type SoundKind = "add" | "complete" | "delete" | "level" | "soft";
 
 type Task = {
   id: string;
   title: string;
-  tag: string;
-  difficulty: Difficulty;
+  desc: string;
+  category: CategoryId;
+  priority: Priority;
+  deadline: string;
   completed: boolean;
-  createdAt: string;
+  createdAt: number;
   completedAt?: string;
 };
 
 type Stats = {
   combo: number;
   soundOn: boolean;
+  theme: Theme;
   lastCompletedDay: string;
 };
 
-type Filter = "active" | "all" | "done";
-type SoundKind = "add" | "complete" | "delete" | "level" | "soft";
+type TaskForm = {
+  title: string;
+  desc: string;
+  category: CategoryId;
+  priority: Priority;
+  deadline: string;
+};
+
+type Toast = {
+  id: number;
+  message: string;
+};
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+const tomorrow = () => {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  return date.toISOString().slice(0, 10);
+};
+
+const yesterday = () => {
+  const date = new Date();
+  date.setDate(date.getDate() - 1);
+  return date.toISOString().slice(0, 10);
+};
+
+const emptyForm: TaskForm = {
+  title: "",
+  desc: "",
+  category: "work",
+  priority: "medium",
+  deadline: today(),
+};
 
 const initialTasks: Task[] = [
   {
     id: "starter-1",
     title: "Собрать главный фокус дня",
-    tag: "Работа",
-    difficulty: "focus",
+    desc: "Одна задача, которая сделает день легче.",
+    category: "work",
+    priority: "high",
+    deadline: today(),
     completed: false,
-    createdAt: new Date().toISOString(),
+    createdAt: Date.now() - 1000 * 60 * 60 * 2,
   },
   {
     id: "starter-2",
-    title: "Закрыть одну маленькую задачу",
-    tag: "Дом",
-    difficulty: "quick",
+    title: "Закрыть маленький хвост",
+    desc: "Быстрая победа для разгона комбо.",
+    category: "home",
+    priority: "low",
+    deadline: today(),
     completed: true,
-    createdAt: new Date().toISOString(),
+    createdAt: Date.now() - 1000 * 60 * 60 * 7,
     completedAt: new Date().toISOString(),
   },
   {
     id: "starter-3",
-    title: "Разобрать большой хвост",
-    tag: "Босс",
-    difficulty: "boss",
+    title: "Подготовить план на завтра",
+    desc: "Черновик, дедлайн, первый шаг.",
+    category: "study",
+    priority: "medium",
+    deadline: tomorrow(),
     completed: false,
-    createdAt: new Date().toISOString(),
+    createdAt: Date.now() - 1000 * 60 * 60 * 10,
+  },
+  {
+    id: "starter-4",
+    title: "Разобрать просроченную задачу",
+    desc: "Либо выполнить, либо честно удалить.",
+    category: "personal",
+    priority: "high",
+    deadline: yesterday(),
+    completed: false,
+    createdAt: Date.now() - 1000 * 60 * 60 * 24,
   },
 ];
 
 const initialStats: Stats = {
   combo: 1,
   soundOn: true,
-  lastCompletedDay: new Date().toISOString().slice(0, 10),
+  theme: "dark",
+  lastCompletedDay: today(),
 };
 
-function getTaskXp(task: Task) {
-  return DIFFICULTIES[task.difficulty].xp;
+function isCategoryId(value: unknown): value is CategoryId {
+  return typeof value === "string" && CATEGORIES.some((category) => category.id === value);
+}
+
+function isPriority(value: unknown): value is Priority {
+  return value === "low" || value === "medium" || value === "high";
+}
+
+function normalizeTask(raw: unknown, index: number): Task | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const item = raw as Partial<Task> & {
+    tag?: string;
+    difficulty?: string;
+    createdAt?: string | number;
+  };
+
+  const title = typeof item.title === "string" ? item.title.trim() : "";
+  if (!title) {
+    return null;
+  }
+
+  const priority: Priority = isPriority(item.priority)
+    ? item.priority
+    : item.difficulty === "boss"
+      ? "high"
+      : item.difficulty === "quick"
+        ? "low"
+        : "medium";
+
+  const category: CategoryId = isCategoryId(item.category)
+    ? item.category
+    : item.tag === "Дом"
+      ? "home"
+      : item.tag === "Учёба"
+        ? "study"
+        : item.tag === "Личное"
+          ? "personal"
+          : "work";
+
+  const createdAt =
+    typeof item.createdAt === "number"
+      ? item.createdAt
+      : typeof item.createdAt === "string"
+        ? new Date(item.createdAt).getTime()
+        : Date.now() - index * 1000;
+
+  return {
+    id: typeof item.id === "string" ? item.id : `task-${Date.now()}-${index}`,
+    title,
+    desc: typeof item.desc === "string" ? item.desc : "",
+    category,
+    priority,
+    deadline: typeof item.deadline === "string" ? item.deadline : "",
+    completed: Boolean(item.completed),
+    createdAt: Number.isFinite(createdAt) ? createdAt : Date.now() - index * 1000,
+    completedAt: typeof item.completedAt === "string" ? item.completedAt : undefined,
+  };
 }
 
 function calculateXp(tasks: Task[]) {
-  return tasks.reduce((sum, task) => sum + (task.completed ? getTaskXp(task) : 0), 0);
+  return tasks.reduce(
+    (sum, task) => sum + (task.completed ? PRIORITIES[task.priority].xp : 0),
+    0,
+  );
 }
 
 function getLevelInfo(xp: number) {
   let level = 1;
   let remaining = xp;
-  let next = 120;
+  let next = 140;
 
   while (remaining >= next) {
     remaining -= next;
     level += 1;
-    next = 120 + level * 45;
+    next = 140 + level * 55;
   }
 
   return {
@@ -102,45 +230,71 @@ function getLevelInfo(xp: number) {
   };
 }
 
-function todayKey() {
-  return new Date().toISOString().slice(0, 10);
+function formatDeadline(value: string) {
+  if (!value) {
+    return "Без срока";
+  }
+
+  if (value === today()) {
+    return "Сегодня";
+  }
+
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: "numeric",
+    month: "short",
+  }).format(new Date(`${value}T12:00:00`));
+}
+
+function newTaskId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+
+  return `task-${Date.now()}`;
 }
 
 export default function TodoQuest() {
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
   const [stats, setStats] = useState<Stats>(initialStats);
-  const [title, setTitle] = useState("");
-  const [tag, setTag] = useState("Работа");
-  const [difficulty, setDifficulty] = useState<Difficulty>("focus");
-  const [filter, setFilter] = useState<Filter>("active");
+  const [activeTab, setActiveTab] = useState<Tab>("all");
+  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortMode, setSortMode] = useState<SortMode>("newest");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<TaskForm>(emptyForm);
+  const [toasts, setToasts] = useState<Toast[]>([]);
   const [burstId, setBurstId] = useState<string | null>(null);
   const [hydrated, setHydrated] = useState(false);
-  const [dateLabel, setDateLabel] = useState("Сегодня");
   const audioRef = useRef<AudioContext | null>(null);
+  const toastIdRef = useRef(0);
 
   useEffect(() => {
-    const date = new Intl.DateTimeFormat("ru-RU", {
-      weekday: "long",
-      day: "numeric",
-      month: "long",
-    }).format(new Date());
-
-    setDateLabel(date.charAt(0).toUpperCase() + date.slice(1));
-
     try {
       const savedTasks = window.localStorage.getItem(TASKS_KEY);
       const savedStats = window.localStorage.getItem(STATS_KEY);
 
       if (savedTasks) {
-        const parsedTasks = JSON.parse(savedTasks) as Task[];
-        if (Array.isArray(parsedTasks)) {
-          setTasks(parsedTasks);
+        const parsedTasks = JSON.parse(savedTasks) as unknown[];
+        const normalizedTasks = Array.isArray(parsedTasks)
+          ? parsedTasks
+              .map((task, index) => normalizeTask(task, index))
+              .filter((task): task is Task => Boolean(task))
+          : [];
+
+        if (normalizedTasks.length) {
+          setTasks(normalizedTasks);
         }
       }
 
       if (savedStats) {
-        const parsedStats = JSON.parse(savedStats) as Stats;
-        setStats({ ...initialStats, ...parsedStats });
+        const parsedStats = JSON.parse(savedStats) as Partial<Stats>;
+        setStats({
+          ...initialStats,
+          ...parsedStats,
+          theme: parsedStats.theme === "light" ? "light" : "dark",
+          soundOn: parsedStats.soundOn !== false,
+        });
       }
     } catch {
       setTasks(initialTasks);
@@ -158,6 +312,30 @@ export default function TodoQuest() {
     window.localStorage.setItem(TASKS_KEY, JSON.stringify(tasks));
     window.localStorage.setItem(STATS_KEY, JSON.stringify(stats));
   }, [hydrated, stats, tasks]);
+
+  useEffect(() => {
+    if (!modalOpen) {
+      return;
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeModal();
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [modalOpen]);
+
+  const showToast = useCallback((message: string) => {
+    const id = toastIdRef.current + 1;
+    toastIdRef.current = id;
+    setToasts((currentToasts) => [...currentToasts, { id, message }]);
+    window.setTimeout(() => {
+      setToasts((currentToasts) => currentToasts.filter((toast) => toast.id !== id));
+    }, 2300);
+  }, []);
 
   const playSound = useCallback(
     (kind: SoundKind) => {
@@ -194,12 +372,12 @@ export default function TodoQuest() {
         const oscillator = context.createOscillator();
         const gain = context.createGain();
         const start = now + index * 0.075;
-        const duration = kind === "level" ? 0.12 : 0.09;
+        const duration = kind === "level" ? 0.13 : 0.09;
 
         oscillator.type = kind === "delete" ? "triangle" : "sine";
         oscillator.frequency.setValueAtTime(frequency, start);
         gain.gain.setValueAtTime(0.0001, start);
-        gain.gain.exponentialRampToValueAtTime(kind === "soft" ? 0.045 : 0.075, start + 0.012);
+        gain.gain.exponentialRampToValueAtTime(kind === "soft" ? 0.035 : 0.07, start + 0.012);
         gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
 
         oscillator.connect(gain);
@@ -211,48 +389,185 @@ export default function TodoQuest() {
     [stats.soundOn],
   );
 
+  const counts = useMemo(() => {
+    const todayKey = today();
+    const completed = tasks.filter((task) => task.completed).length;
+    const active = tasks.length - completed;
+    const dueToday = tasks.filter((task) => task.deadline === todayKey).length;
+    const doneToday = tasks.filter(
+      (task) => task.deadline === todayKey && task.completed,
+    ).length;
+    const overdue = tasks.filter(
+      (task) => !task.completed && task.deadline && task.deadline < todayKey,
+    ).length;
+    const categoryCounts = CATEGORIES.reduce(
+      (acc, category) => ({
+        ...acc,
+        [category.id]: tasks.filter((task) => task.category === category.id).length,
+      }),
+      {} as Record<CategoryId, number>,
+    );
+
+    return {
+      all: tasks.length,
+      active,
+      completed,
+      dueToday,
+      doneToday,
+      overdue,
+      progress: tasks.length ? Math.round((completed / tasks.length) * 100) : 0,
+      dayProgress: dueToday ? Math.round((doneToday / dueToday) * 100) : 0,
+      categoryCounts,
+    };
+  }, [tasks]);
+
   const xp = useMemo(() => calculateXp(tasks), [tasks]);
   const levelInfo = useMemo(() => getLevelInfo(xp), [xp]);
-  const completedCount = tasks.filter((task) => task.completed).length;
-  const activeCount = tasks.length - completedCount;
-  const todayDone = tasks.filter((task) => task.completedAt?.startsWith(todayKey())).length;
-  const completionRate = tasks.length ? Math.round((completedCount / tasks.length) * 100) : 0;
 
   const filteredTasks = useMemo(() => {
-    if (filter === "done") {
-      return tasks.filter((task) => task.completed);
+    const todayKey = today();
+    const query = searchQuery.trim().toLowerCase();
+
+    return tasks
+      .filter((task) => {
+        if (activeTab === "today") {
+          return task.deadline === todayKey;
+        }
+
+        if (activeTab === "overdue") {
+          return !task.completed && task.deadline && task.deadline < todayKey;
+        }
+
+        if (activeTab !== "all") {
+          return task.category === activeTab;
+        }
+
+        return true;
+      })
+      .filter((task) => priorityFilter === "all" || task.priority === priorityFilter)
+      .filter((task) => {
+        if (!query) {
+          return true;
+        }
+
+        return (
+          task.title.toLowerCase().includes(query) ||
+          task.desc.toLowerCase().includes(query)
+        );
+      })
+      .sort((a, b) => {
+        if (sortMode === "oldest") {
+          return a.createdAt - b.createdAt;
+        }
+
+        if (sortMode === "deadline") {
+          if (!a.deadline) {
+            return 1;
+          }
+
+          if (!b.deadline) {
+            return -1;
+          }
+
+          return a.deadline.localeCompare(b.deadline);
+        }
+
+        if (sortMode === "priority") {
+          return PRIORITIES[b.priority].order - PRIORITIES[a.priority].order;
+        }
+
+        return b.createdAt - a.createdAt;
+      });
+  }, [activeTab, priorityFilter, searchQuery, sortMode, tasks]);
+
+  const activeTitle = useMemo(() => {
+    if (activeTab === "all") {
+      return "Все задачи";
     }
 
-    if (filter === "active") {
-      return tasks.filter((task) => !task.completed);
+    if (activeTab === "today") {
+      return "Сегодня";
     }
 
-    return tasks;
-  }, [filter, tasks]);
+    if (activeTab === "overdue") {
+      return "Просроченные";
+    }
 
-  const addTask = () => {
-    const cleanTitle = title.trim();
+    return CATEGORIES.find((category) => category.id === activeTab)?.name ?? "Категория";
+  }, [activeTab]);
 
-    if (!cleanTitle) {
+  function openCreateModal() {
+    setEditingId(null);
+    setForm({ ...emptyForm, deadline: today() });
+    setModalOpen(true);
+    playSound("soft");
+  }
+
+  function openEditModal(task: Task) {
+    setEditingId(task.id);
+    setForm({
+      title: task.title,
+      desc: task.desc,
+      category: task.category,
+      priority: task.priority,
+      deadline: task.deadline,
+    });
+    setModalOpen(true);
+    playSound("soft");
+  }
+
+  function closeModal() {
+    setModalOpen(false);
+    setEditingId(null);
+  }
+
+  function saveTask(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const title = form.title.trim();
+    if (!title) {
       playSound("soft");
       return;
     }
 
-    const task: Task = {
-      id: crypto.randomUUID(),
-      title: cleanTitle,
-      tag,
-      difficulty,
-      completed: false,
-      createdAt: new Date().toISOString(),
-    };
+    if (editingId) {
+      setTasks((currentTasks) =>
+        currentTasks.map((task) =>
+          task.id === editingId
+            ? {
+                ...task,
+                title,
+                desc: form.desc.trim(),
+                category: form.category,
+                priority: form.priority,
+                deadline: form.deadline,
+              }
+            : task,
+        ),
+      );
+      showToast("Задача обновлена");
+      playSound("add");
+    } else {
+      const task: Task = {
+        id: newTaskId(),
+        title,
+        desc: form.desc.trim(),
+        category: form.category,
+        priority: form.priority,
+        deadline: form.deadline,
+        completed: false,
+        createdAt: Date.now(),
+      };
 
-    setTasks((currentTasks) => [task, ...currentTasks]);
-    setTitle("");
-    playSound("add");
-  };
+      setTasks((currentTasks) => [task, ...currentTasks]);
+      showToast("Задача создана");
+      playSound("add");
+    }
 
-  const toggleTask = (id: string) => {
+    closeModal();
+  }
+
+  function toggleTask(id: string) {
     setTasks((currentTasks) => {
       const previousLevel = getLevelInfo(calculateXp(currentTasks)).level;
       let completedNow = false;
@@ -263,7 +578,6 @@ export default function TodoQuest() {
         }
 
         completedNow = !task.completed;
-
         return {
           ...task,
           completed: !task.completed,
@@ -277,221 +591,454 @@ export default function TodoQuest() {
         setStats((currentStats) => ({
           ...currentStats,
           combo:
-            currentStats.lastCompletedDay === todayKey() || !currentStats.lastCompletedDay
+            currentStats.lastCompletedDay === today() || !currentStats.lastCompletedDay
               ? currentStats.combo + 1
               : 1,
-          lastCompletedDay: todayKey(),
+          lastCompletedDay: today(),
         }));
         setBurstId(id);
         window.setTimeout(() => setBurstId(null), 520);
         playSound(nextLevel > previousLevel ? "level" : "complete");
+        showToast(nextLevel > previousLevel ? "Новый уровень" : "Задача закрыта");
       } else {
         playSound("soft");
       }
 
       return nextTasks;
     });
-  };
+  }
 
-  const deleteTask = (id: string) => {
+  function deleteTask(id: string) {
     setTasks((currentTasks) => currentTasks.filter((task) => task.id !== id));
     playSound("delete");
-  };
+    showToast("Задача удалена");
+  }
 
-  const clearDone = () => {
-    if (!completedCount) {
+  function clearCompleted() {
+    if (!counts.completed) {
       playSound("soft");
       return;
     }
 
     setTasks((currentTasks) => currentTasks.filter((task) => !task.completed));
     playSound("delete");
-  };
+    showToast("Выполненные очищены");
+  }
 
-  const toggleSound = () => {
+  function toggleTheme() {
+    setStats((currentStats) => ({
+      ...currentStats,
+      theme: currentStats.theme === "dark" ? "light" : "dark",
+    }));
+  }
+
+  function toggleSound() {
     setStats((currentStats) => ({
       ...currentStats,
       soundOn: !currentStats.soundOn,
     }));
-  };
+  }
 
   return (
-    <main className="app-shell">
-      <section className="topbar" aria-label="Панель состояния">
+    <main className={`app-shell theme-${stats.theme}`}>
+      <div className="ambient-surface" aria-hidden="true" />
+
+      <aside className="sidebar glass-panel" aria-label="Навигация">
         <div>
-          <p className="eyebrow">{dateLabel}</p>
-          <h1>Level List</h1>
-        </div>
-
-        <button className="sound-toggle" type="button" onClick={toggleSound}>
-          <span className={stats.soundOn ? "sound-dot is-on" : "sound-dot"} />
-          Звук {stats.soundOn ? "on" : "off"}
-        </button>
-      </section>
-
-      <section className="hero-panel" aria-label="Прогресс">
-        <div className="level-mark">
-          <span>LVL</span>
-          <strong>{levelInfo.level}</strong>
-        </div>
-
-        <div className="progress-copy">
-          <p className="eyebrow">XP прогресс</p>
-          <h2>
-            {levelInfo.current} / {levelInfo.next} XP
-          </h2>
-          <div className="xp-track" aria-label={`Прогресс уровня ${levelInfo.progress}%`}>
-            <span style={{ width: `${levelInfo.progress}%` }} />
+          <div className="brand-row">
+            <div className="app-mark">F</div>
+            <div>
+              <p className="app-name">FocusFlow</p>
+              <p className="app-subtitle">Level organizer</p>
+            </div>
           </div>
-        </div>
 
-        <div className="combo-pill">
-          <span>Комбо</span>
-          <strong>{stats.combo}</strong>
-        </div>
-      </section>
-
-      <section className="workspace-grid">
-        <aside className="status-rail" aria-label="Статистика">
-          <div className="metric">
-            <span>Сегодня</span>
-            <strong>{todayDone}</strong>
-          </div>
-          <div className="metric">
-            <span>Активно</span>
-            <strong>{activeCount}</strong>
-          </div>
-          <div className="metric">
-            <span>Готово</span>
-            <strong>{completionRate}%</strong>
-          </div>
-          <button className="ghost-button" type="button" onClick={clearDone}>
-            Очистить done
+          <button className="create-button" type="button" onClick={openCreateModal}>
+            <span>＋</span>
+            <strong>Создать задачу</strong>
           </button>
-        </aside>
 
-        <div className="task-zone">
-          <form
-            className="composer"
-            onSubmit={(event) => {
-              event.preventDefault();
-              addTask();
-            }}
-          >
-            <input
-              aria-label="Новая задача"
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              placeholder="Новая задача"
+          <nav className="nav-group" aria-label="Временные рамки">
+            <p className="nav-label">Временные рамки</p>
+            <FilterButton
+              active={activeTab === "all"}
+              count={counts.all}
+              label="Все задачи"
+              onClick={() => setActiveTab("all")}
             />
+            <FilterButton
+              active={activeTab === "today"}
+              count={counts.dueToday}
+              label="Сегодня"
+              onClick={() => setActiveTab("today")}
+            />
+            <FilterButton
+              active={activeTab === "overdue"}
+              count={counts.overdue}
+              danger
+              label="Просроченные"
+              onClick={() => setActiveTab("overdue")}
+            />
+          </nav>
 
-            <select
-              aria-label="Категория"
-              value={tag}
-              onChange={(event) => setTag(event.target.value)}
-            >
-              <option>Работа</option>
-              <option>Учёба</option>
-              <option>Дом</option>
-              <option>Личное</option>
-              <option>Босс</option>
-            </select>
+          <nav className="nav-group" aria-label="Категории">
+            <p className="nav-label">Категории</p>
+            {CATEGORIES.map((category) => (
+              <FilterButton
+                active={activeTab === category.id}
+                count={counts.categoryCounts[category.id]}
+                key={category.id}
+                label={category.name}
+                marker={category.color}
+                onClick={() => setActiveTab(category.id)}
+              />
+            ))}
+          </nav>
+        </div>
 
-            <select
-              aria-label="Сложность"
-              value={difficulty}
-              onChange={(event) => setDifficulty(event.target.value as Difficulty)}
-            >
-              {Object.entries(DIFFICULTIES).map(([key, value]) => (
-                <option key={key} value={key}>
-                  {value.label} +{value.xp}
-                </option>
-              ))}
-            </select>
+        <div className="sidebar-footer">
+          <button className="utility-button" type="button" onClick={toggleTheme}>
+            <span>{stats.theme === "dark" ? "☾" : "☼"}</span>
+            <strong>{stats.theme === "dark" ? "Dark" : "Light"}</strong>
+          </button>
+          <button className="utility-button" type="button" onClick={toggleSound}>
+            <span>{stats.soundOn ? "♪" : "∅"}</span>
+            <strong>Sound {stats.soundOn ? "on" : "off"}</strong>
+          </button>
+        </div>
+      </aside>
 
-            <button className="primary-button" type="submit">
-              Добавить
-            </button>
-          </form>
+      <section className="main-stage">
+        <header className="stage-header">
+          <div>
+            <p className="eyebrow">Личный ритм</p>
+            <h1>Стеклянная доска задач</h1>
+          </div>
+          <div className="level-pill glass-panel">
+            <span>LVL</span>
+            <strong>{levelInfo.level}</strong>
+          </div>
+        </header>
 
-          <div className="filter-row" aria-label="Фильтры">
-            {(["active", "all", "done"] as const).map((option) => (
+        <section className="stats-grid" aria-label="Статистика">
+          <StatCard label="Активно" value={counts.active} tone="blue" />
+          <StatCard label="Готово" value={counts.completed} tone="green" />
+          <div className="stat-card glass-panel progress-stat">
+            <div className="stat-topline">
+              <span>Прогресс</span>
+              <strong>{counts.progress}%</strong>
+            </div>
+            <div className="liquid-track">
+              <span style={{ width: `${counts.progress}%` }} />
+            </div>
+            <small>
+              {levelInfo.current} / {levelInfo.next} XP · комбо {stats.combo}
+            </small>
+          </div>
+        </section>
+
+        <section className="control-strip glass-panel" aria-label="Управление задачами">
+          <label className="search-box">
+            <span>⌕</span>
+            <input
+              aria-label="Поиск среди задач"
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Поиск среди задач"
+              value={searchQuery}
+            />
+          </label>
+
+          <div className="priority-tabs" aria-label="Фильтр приоритета">
+            {(["all", "high", "medium", "low"] as const).map((priority) => (
               <button
-                className={filter === option ? "filter-button is-active" : "filter-button"}
-                key={option}
+                className={priorityFilter === priority ? "chip is-active" : "chip"}
+                key={priority}
+                onClick={() => setPriorityFilter(priority)}
                 type="button"
-                onClick={() => setFilter(option)}
               >
-                {option === "active" ? "В работе" : option === "all" ? "Все" : "Done"}
+                {priority === "all" ? "Все" : PRIORITIES[priority].label}
               </button>
             ))}
           </div>
 
+          <label className="sort-box">
+            <span>Сортировка</span>
+            <select
+              aria-label="Сортировка"
+              onChange={(event) => setSortMode(event.target.value as SortMode)}
+              value={sortMode}
+            >
+              <option value="newest">Сначала новые</option>
+              <option value="oldest">Сначала старые</option>
+              <option value="deadline">По дедлайну</option>
+              <option value="priority">По приоритету</option>
+            </select>
+          </label>
+        </section>
+
+        <section className="task-section">
+          <div className="task-section-head">
+            <h2>
+              {activeTitle}
+              <span>{filteredTasks.length}</span>
+            </h2>
+            <button
+              className={counts.completed ? "clear-button is-visible" : "clear-button"}
+              disabled={!counts.completed}
+              onClick={clearCompleted}
+              type="button"
+            >
+              Очистить выполненные
+            </button>
+          </div>
+
           <div className="task-list" aria-live="polite">
             {filteredTasks.length ? (
-              filteredTasks.map((task) => {
-                const difficultyMeta = DIFFICULTIES[task.difficulty];
-
-                return (
-                  <article
-                    className={task.completed ? "task-card is-complete" : "task-card"}
-                    key={task.id}
-                  >
-                    <button
-                      className="check-button"
-                      type="button"
-                      onClick={() => toggleTask(task.id)}
-                      aria-label={task.completed ? "Вернуть задачу" : "Завершить задачу"}
-                    >
-                      <span />
-                    </button>
-
-                    <div className="task-main">
-                      <div className="task-title-row">
-                        <h3>{task.title}</h3>
-                        <span className={`xp-chip tone-${difficultyMeta.tone}`}>
-                          +{difficultyMeta.xp} XP
-                        </span>
-                      </div>
-
-                      <div className="task-meta">
-                        <span>{task.tag}</span>
-                        <span>{difficultyMeta.label}</span>
-                      </div>
-                    </div>
-
-                    <button
-                      className="delete-button"
-                      type="button"
-                      onClick={() => deleteTask(task.id)}
-                      aria-label="Удалить задачу"
-                      title="Удалить"
-                    >
-                      ×
-                    </button>
-
-                    {burstId === task.id ? (
-                      <div className="burst" aria-hidden="true">
-                        {Array.from({ length: 8 }).map((_, index) => (
-                          <span
-                            key={index}
-                            style={{ "--angle": `${index * 45}deg` } as CSSProperties}
-                          />
-                        ))}
-                      </div>
-                    ) : null}
-                  </article>
-                );
-              })
+              filteredTasks.map((task) => (
+                <TaskCard
+                  key={task.id}
+                  burst={burstId === task.id}
+                  onDelete={() => deleteTask(task.id)}
+                  onEdit={() => openEditModal(task)}
+                  onToggle={() => toggleTask(task.id)}
+                  task={task}
+                />
+              ))
             ) : (
-              <div className="empty-state">
+              <div className="empty-state glass-panel">
                 <strong>Пусто</strong>
-                <span>Смена фильтра или новая задача вернут доску в игру.</span>
+                <span>Фильтр не нашёл задач.</span>
               </div>
             )}
           </div>
-        </div>
+        </section>
       </section>
+
+      {modalOpen ? (
+        <div
+          className="modal-shell"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              closeModal();
+            }
+          }}
+        >
+          <form className="task-modal glass-panel" onSubmit={saveTask}>
+            <header>
+              <div>
+                <p className="eyebrow">{editingId ? "Редактирование" : "Новая задача"}</p>
+                <h2>{editingId ? "Обновить задачу" : "Создать задачу"}</h2>
+              </div>
+              <button aria-label="Закрыть" className="icon-button" onClick={closeModal} type="button">
+                ×
+              </button>
+            </header>
+
+            <label>
+              <span>Название</span>
+              <input
+                autoFocus
+                onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))}
+                placeholder="Например: закончить презентацию"
+                required
+                value={form.title}
+              />
+            </label>
+
+            <label>
+              <span>Описание</span>
+              <textarea
+                onChange={(event) => setForm((current) => ({ ...current, desc: event.target.value }))}
+                placeholder="Детали задачи"
+                rows={3}
+                value={form.desc}
+              />
+            </label>
+
+            <div className="form-grid">
+              <label>
+                <span>Категория</span>
+                <select
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      category: event.target.value as CategoryId,
+                    }))
+                  }
+                  value={form.category}
+                >
+                  {CATEGORIES.map((category) => (
+                    <option key={category.id} value={category.id}>
+                      {category.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label>
+                <span>Дедлайн</span>
+                <input
+                  onChange={(event) =>
+                    setForm((current) => ({ ...current, deadline: event.target.value }))
+                  }
+                  type="date"
+                  value={form.deadline}
+                />
+              </label>
+            </div>
+
+            <fieldset className="priority-field">
+              <legend>Приоритет</legend>
+              {(["low", "medium", "high"] as const).map((priority) => (
+                <label
+                  className={form.priority === priority ? "priority-option is-selected" : "priority-option"}
+                  key={priority}
+                >
+                  <input
+                    checked={form.priority === priority}
+                    name="priority"
+                    onChange={() => setForm((current) => ({ ...current, priority }))}
+                    type="radio"
+                    value={priority}
+                  />
+                  <span className={`priority-dot tone-${PRIORITIES[priority].tone}`} />
+                  {PRIORITIES[priority].label}
+                </label>
+              ))}
+            </fieldset>
+
+            <footer>
+              <button className="secondary-button" onClick={closeModal} type="button">
+                Отмена
+              </button>
+              <button className="submit-button" type="submit">
+                {editingId ? "Сохранить" : "Создать"}
+              </button>
+            </footer>
+          </form>
+        </div>
+      ) : null}
+
+      <div className="toast-stack" aria-live="polite">
+        {toasts.map((toast) => (
+          <div className="toast glass-panel" key={toast.id}>
+            {toast.message}
+          </div>
+        ))}
+      </div>
     </main>
+  );
+}
+
+function FilterButton({
+  active,
+  count,
+  danger = false,
+  label,
+  marker,
+  onClick,
+}: {
+  active: boolean;
+  count: number;
+  danger?: boolean;
+  label: string;
+  marker?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className={active ? "filter-button is-active" : "filter-button"}
+      onClick={onClick}
+      type="button"
+    >
+      <span className="filter-label">
+        {marker ? <i className={`category-marker marker-${marker}`} /> : null}
+        <span className={danger ? "danger-text" : undefined}>{label}</span>
+      </span>
+      <strong>{count}</strong>
+    </button>
+  );
+}
+
+function StatCard({ label, tone, value }: { label: string; tone: string; value: number }) {
+  return (
+    <div className="stat-card glass-panel">
+      <div className={`stat-icon tone-${tone}`}>{label.slice(0, 1)}</div>
+      <div>
+        <strong>{value}</strong>
+        <span>{label}</span>
+      </div>
+    </div>
+  );
+}
+
+function TaskCard({
+  burst,
+  onDelete,
+  onEdit,
+  onToggle,
+  task,
+}: {
+  burst: boolean;
+  onDelete: () => void;
+  onEdit: () => void;
+  onToggle: () => void;
+  task: Task;
+}) {
+  const category = CATEGORIES.find((item) => item.id === task.category) ?? CATEGORIES[0];
+  const priority = PRIORITIES[task.priority];
+  const isOverdue = !task.completed && task.deadline && task.deadline < today();
+
+  return (
+    <article className={task.completed ? "task-card glass-panel is-complete" : "task-card glass-panel"}>
+      <button
+        aria-label={task.completed ? "Вернуть задачу" : "Завершить задачу"}
+        className="round-check"
+        onClick={onToggle}
+        type="button"
+      >
+        {task.completed ? "✓" : ""}
+      </button>
+
+      <div className="task-content">
+        <div className="task-title-row">
+          <h3>{task.title}</h3>
+          <span className={`priority-badge tone-${priority.tone}`}>{priority.label}</span>
+        </div>
+
+        {task.desc ? <p>{task.desc}</p> : null}
+
+        <div className="task-meta">
+          <span>
+            <i className={`category-marker marker-${category.color}`} />
+            {category.name}
+          </span>
+          <span className={isOverdue ? "date-badge is-overdue" : "date-badge"}>
+            {formatDeadline(task.deadline)}
+          </span>
+          <span>+{priority.xp} XP</span>
+        </div>
+      </div>
+
+      <div className="task-actions">
+        <button aria-label="Редактировать" className="icon-button" onClick={onEdit} type="button">
+          ✎
+        </button>
+        <button aria-label="Удалить" className="icon-button danger" onClick={onDelete} type="button">
+          ×
+        </button>
+      </div>
+
+      {burst ? (
+        <div className="burst" aria-hidden="true">
+          {Array.from({ length: 8 }).map((_, index) => (
+            <span
+              key={index}
+              style={{ "--angle": `${index * 45}deg` } as CSSProperties}
+            />
+          ))}
+        </div>
+      ) : null}
+    </article>
   );
 }
