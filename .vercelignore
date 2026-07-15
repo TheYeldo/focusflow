@@ -1,0 +1,13 @@
+node_modules
+.next
+.vinext
+.wrangler
+dist
+out
+outputs
+work
+vinext-starter
+.agents
+.codex
+.openai/drizzle
+*.log
