@@ -3,7 +3,14 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "FocusFlow",
-  description: "A glassy task organizer with priorities, deadlines, search, XP and sounds.",
+  description:
+    "Стеклянный level-organizer для задач, дедлайнов, фокуса, достижений и мягких звуков.",
+  openGraph: {
+    title: "FocusFlow",
+    description:
+      "Премиальная стеклянная доска задач с уровнями, достижениями и мобильной навигацией.",
+    type: "website",
+  },
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
